@@ -1,0 +1,55 @@
+name: tool-call-salvage
+version: "0.1.0"
+description: >-
+  Removes tool-call markup that a model wrote into its reply as text instead of making a real
+  tool call; optionally (off by default) turns it into a real call for models you list.
+author: Julien Talbot
+license: MIT
+homepage: https://github.com/Julientalbot/hermes-tool-call-salvage
+requires_hermes: ">=0.21.0"
+provides_tools: []
+provides_hooks:
+  - transform_llm_output
+provides_middleware:
+  - llm_execution
+config_schema:
+  mode:
+    type: str
+    choices: [strip, salvage]
+    default: strip
+    label: Mode
+    description: >-
+      strip removes leaked tool-call markup from the end of a reply. salvage also turns it into
+      a real tool call, for the models listed below and the tools offered in that request.
+  salvage_models:
+    type: list
+    default: []
+    label: Models to salvage
+    description: >-
+      Glob patterns matched against the model name or provider/model (e.g. "qwen*",
+      "ollama/*"). Empty means no model is salvaged, even in salvage mode.
+  bare_json:
+    type: bool
+    default: false
+    label: Accept bare JSON calls
+    description: >-
+      In salvage mode, also convert a reply that is nothing but {"name": ..., "arguments": ...}
+      objects (Ollama /v1). Never used to strip.
+  deferred_tools:
+    type: bool
+    default: false
+    label: Reach deferred tools through tool_call
+    description: >-
+      In salvage mode, send a call to a tool that is not in the request through Hermes's offered
+      tool_call bridge (Tool Search), which checks the name itself. Off: such calls are not converted.
+  max_calls:
+    type: int
+    default: 8
+    label: Maximum calls per reply
+    description: More calls than this in one reply and nothing is converted (1 to 32).
+  empty_notice:
+    type: str
+    default: "The model wrote a tool call as text instead of making it, so nothing was run. Please ask again."
+    label: Notice when nothing else is left
+    description: >-
+      Shown instead of a reply that was only leaked markup. Empty leaves such a reply unchanged.
