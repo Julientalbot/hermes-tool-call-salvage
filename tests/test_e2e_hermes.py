@@ -113,8 +113,8 @@ def test_strip_mode_removes_the_markup_and_runs_nothing(home):
     with FakeProvider(lambda body: _leak(home, wrapped=False)) as provider:
         _install(home, provider, enabled=True)
         out = _chat(home)
-    assert out.strip() == "Sure."
-    assert "<function" not in out
+    assert out.strip() == "Sure.\n\n(Not run: read_file. The model wrote the call as text instead of making it.)"
+    assert "<function" not in out and "notes.txt" not in out  # the tool is named, its arguments are not
     assert not any(_tool_messages(b) for b in provider.main_requests())
 
 

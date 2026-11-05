@@ -16,8 +16,18 @@ this plugin covers the other shapes and, if you ask for it, runs the call.
 ## Default behaviour (`mode: strip`)
 
 When the final reply **ends** with complete tool-call markup, the plugin removes that markup and
-logs a warning that names the format and the tools (never the arguments). Nothing runs. If the
-reply was only markup, the user gets a short notice instead (`empty_notice`).
+logs a warning that names the format and the tools (never the arguments). Nothing runs. The
+user is told so:
+
+- if text is left before the markup ("Let me read the file."), a one-line notice is added after
+  it (`stripped_notice`), for example `(Not run: read_file. The model wrote the call as text
+  instead of making it.)`. Without it the user would read an announced action and assume it
+  happened; a visible failure can be retried, a silent one cannot;
+- if the reply was only markup, the user gets a short notice instead (`empty_notice`).
+
+Neither notice is added when salvage mode turned the markup into a real call. When salvage mode
+leaves a response alone (model not listed, tool not offered…), the markup is stripped and the
+notice applies as in strip mode.
 
 It never touches:
 
@@ -64,11 +74,19 @@ plugins:
         deferred_tools: false  # salvage only: reach Tool Search (deferred) tools via tool_call
         max_calls: 8           # more calls than this in one reply: nothing is converted (1-32)
         empty_notice: "The model wrote a tool call as text instead of making it, so nothing was run. Please ask again."
+        stripped_notice: "(Not run: {tools}. The model wrote the call as text instead of making it.)"
 ```
 
 An empty `salvage_models` list means nothing is converted, even in `salvage` mode. Settings are
 read on every call, so a change applies without a restart. `empty_notice: ""` leaves a reply that
-was only markup unchanged.
+was only markup unchanged. In `stripped_notice`, `{tools}` becomes the tool names (up to 8, never
+arguments); `stripped_notice: ""` removes the markup without adding a notice (the 0.1 behaviour).
+
+## Changes
+
+- **0.2.0**: `stripped_notice`. When markup is removed and text is left before it, a one-line
+  notice names the tools that were not run.
+- **0.1.0**: first release.
 
 ## Formats
 

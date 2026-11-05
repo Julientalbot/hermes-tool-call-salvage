@@ -181,7 +181,7 @@ def _getter(**settings):
 
 def test_settings_fall_back_to_safe_defaults():
     s = plugin.read_settings(_getter(mode="execute-everything", salvage_models="qwen*", bare_json="yes",
-                                     max_calls=10_000, empty_notice=None))
+                                     max_calls=10_000, empty_notice=None, stripped_notice=3))
     assert s == plugin.Settings(max_calls=32)
     assert plugin.read_settings(_getter()) == plugin.Settings()
 
@@ -197,7 +197,7 @@ def test_output_hook_strips_and_logs(caplog):
     hook = plugin.make_output_hook(_getter())
     with caplog.at_level(logging.WARNING):
         out = hook(response_text=LEAKS[0]["text"], session_id="s", model="m", platform="cli")
-    assert out == LEAKS[0]["kept"]
+    assert out.startswith(LEAKS[0]["kept"] + "\n\n")
     assert "terminal" in caplog.text and "ls -la" not in caplog.text  # names logged, arguments never
 
 
@@ -205,6 +205,81 @@ def test_output_hook_replaces_a_reply_that_was_only_markup_with_the_notice():
     hook = plugin.make_output_hook(_getter())
     assert hook(response_text='<invoke name="x">\n</invoke>') == plugin.DEFAULT_EMPTY_NOTICE
     assert plugin.make_output_hook(_getter(empty_notice=""))(response_text='<invoke name="x">\n</invoke>') is None
+
+
+# --- the notice when text is left before stripped markup -------------------------------------
+
+def test_text_before_stripped_markup_gets_a_notice_naming_the_tool():
+    out = plugin.make_output_hook(_getter())(response_text=LEAKS[0]["text"])
+    assert out == "I will list the directory.\n\n(Not run: terminal. The model wrote the call as text instead of making it.)"
+    assert out.count("\n") == 2  # the notice is one line, on its own paragraph
+
+
+def test_a_reply_that_was_only_markup_gets_the_empty_notice_only():
+    hook = plugin.make_output_hook(_getter(stripped_notice="STRIPPED {tools}"))
+    out = hook(response_text='<invoke name="x">\n</invoke>')
+    assert out == plugin.DEFAULT_EMPTY_NOTICE and "STRIPPED" not in out
+    assert plugin.make_output_hook(_getter(empty_notice="", stripped_notice="S {tools}"))(
+        response_text='<invoke name="x">\n</invoke>') is None
+
+
+def test_an_empty_stripped_notice_keeps_the_0_1_behaviour():
+    out = plugin.make_output_hook(_getter(stripped_notice=""))(response_text=LEAKS[0]["text"])
+    assert out == LEAKS[0]["kept"]
+
+
+@pytest.mark.parametrize("case", [c for c in LEAKS if c["kept"].strip()], ids=lambda c: c["id"])
+def test_every_kept_text_gets_the_notice_and_never_the_arguments(case):
+    names = []
+    for name, arguments in case["calls"]:
+        inner = salvage._unwrap_envelope(salvage.Call(name, arguments))
+        names += [c.name for c in inner or [salvage.Call(name, arguments)] if c.name not in names]
+    out = plugin.make_output_hook(_getter())(response_text=case["text"])
+    # Exactly the kept text and the template with the names: no argument can reach the user.
+    assert out == case["kept"] + "\n\n" + plugin.DEFAULT_STRIPPED_NOTICE.replace("{tools}", ", ".join(names))
+
+
+def test_the_notice_lists_several_tools_once_each_in_order():
+    text = ("Reading both.\n<function=read_file>\n<parameter=path>/etc/secret\n</parameter>\n</function>\n"
+            "<function=terminal>\n<parameter=command>rm -rf /tmp/x\n</parameter>\n</function>\n"
+            "<function=read_file>\n<parameter=path>/b\n</parameter>\n</function>")
+    out = plugin.make_output_hook(_getter(stripped_notice="[{tools}]"))(response_text=text)
+    assert out == "Reading both.\n\n[read_file, terminal]"
+
+
+def test_the_notice_names_the_tools_inside_an_envelope():
+    envelope = next(c for c in LEAKS if c["id"] == "envelope")["text"]
+    out = plugin.make_output_hook(_getter(stripped_notice="{tools}"))(response_text="On it.\n" + envelope)
+    assert out == "On it.\n\nterminal, web_search"
+
+
+def test_a_custom_notice_without_placeholder_or_on_several_lines_stays_one_line():
+    hook = plugin.make_output_hook(_getter(stripped_notice="Nothing\nran."))
+    assert hook(response_text=LEAKS[0]["text"]) == LEAKS[0]["kept"] + "\n\nNothing ran."
+
+
+def test_a_long_list_of_tools_is_cut():
+    text = "Many.\n" + "".join(f'<tool_call>{{"name": "t{i}"}}</tool_call>\n' for i in range(12))
+    out = plugin.make_output_hook(_getter(stripped_notice="{tools}"))(response_text=text)
+    assert out == "Many.\n\n" + ", ".join(f"t{i}" for i in range(8)) + ", …"
+
+
+def test_salvaged_calls_leave_no_markup_so_the_hook_adds_no_notice():
+    text = 'Checking.\n<tool_call>\n{"name": "web_search", "arguments": {"query": "x"}}\n</tool_call>'
+    settings = {"mode": "salvage", "salvage_models": ["qwen*"]}
+    out = _run_middleware(settings, _chat(text))
+    message = out.choices[0].message
+    assert message.tool_calls and message.content == "Checking."
+    assert plugin.make_output_hook(_getter(**settings))(response_text=message.content) is None
+
+
+def test_a_call_salvage_declines_is_stripped_with_the_notice():
+    text = 'Deleting.\n<tool_call>\n{"name": "delete_everything", "arguments": {"path": "/"}}\n</tool_call>'
+    settings = {"mode": "salvage", "salvage_models": ["qwen*"]}
+    response = _chat(text)
+    assert _run_middleware(settings, response) is response  # tool not offered: not converted
+    out = plugin.make_output_hook(_getter(**settings))(response_text=text)
+    assert out == "Deleting.\n\n(Not run: delete_everything. The model wrote the call as text instead of making it.)"
 
 
 @pytest.mark.parametrize("case", FALSE_POSITIVES, ids=[c["id"] for c in FALSE_POSITIVES])

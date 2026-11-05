@@ -5,7 +5,9 @@ DSML, Harmony, special tokens) instead of a structured ``tool_calls`` entry. The
 markup and nothing runs.
 
 * ``transform_llm_output`` (always): remove unambiguous leaked call markup that ends the final
-  reply. Code blocks and markup followed by more text are never touched.
+  reply. Code blocks and markup followed by more text are never touched. When text is left
+  before the markup, a one-line notice naming the tools says they were not run, so an announced
+  action never reads as done.
 * ``llm_execution`` middleware (``mode: salvage`` only, for models listed in ``salvage_models``):
   turn the leaked text of a Chat Completions response into structured tool calls, but only for
   tools offered in that request (or, with ``deferred_tools``, through Hermes's offered
@@ -29,6 +31,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_EMPTY_NOTICE = (
     "The model wrote a tool call as text instead of making it, so nothing was run. "
     "Please ask again.")
+# ``{tools}`` becomes the tool names (never arguments). One line, appended after the kept text.
+DEFAULT_STRIPPED_NOTICE = "(Not run: {tools}. The model wrote the call as text instead of making it.)"
+MAX_NOTICE_NAMES = 8
 MODES = ("strip", "salvage")
 
 
@@ -40,6 +45,7 @@ class Settings:
     deferred_tools: bool = False
     max_calls: int = 8
     empty_notice: str = DEFAULT_EMPTY_NOTICE
+    stripped_notice: str = DEFAULT_STRIPPED_NOTICE
 
 
 def read_settings(get: Callable[[str, Any], Any]) -> Settings:
@@ -51,6 +57,7 @@ def read_settings(get: Callable[[str, Any], Any]) -> Settings:
     deferred = get("deferred_tools", d.deferred_tools)
     max_calls = get("max_calls", d.max_calls)
     notice = get("empty_notice", d.empty_notice)
+    stripped = get("stripped_notice", d.stripped_notice)
     return Settings(
         mode=mode if mode in MODES else d.mode,
         salvage_models=tuple(m for m in models if isinstance(m, str) and m.strip())
@@ -60,6 +67,7 @@ def read_settings(get: Callable[[str, Any], Any]) -> Settings:
         max_calls=max(1, min(int(max_calls), 32))
         if isinstance(max_calls, int) and not isinstance(max_calls, bool) else d.max_calls,
         empty_notice=notice if isinstance(notice, str) else d.empty_notice,
+        stripped_notice=stripped if isinstance(stripped, str) else d.stripped_notice,
     )
 
 
@@ -84,6 +92,26 @@ def _names(calls) -> str:
     return ", ".join(sorted(names))
 
 
+def _user_names(calls) -> str:
+    """Tool names for the user, in order, deduplicated; envelopes and bridge calls are unwrapped
+    to the tools they name. Names are already restricted to ``[A-Za-z0-9_.-]``; never arguments."""
+    names = []
+    for c in calls:
+        inner = salvage._unwrap_envelope(c)
+        for one in inner if inner else [c]:
+            if one.name not in names:
+                names.append(one.name)
+    if len(names) > MAX_NOTICE_NAMES:
+        names = names[:MAX_NOTICE_NAMES] + ["…"]
+    return ", ".join(names)
+
+
+def stripped_notice(template: str, calls) -> str:
+    """The notice for text that announced calls which were removed; ``""`` when disabled."""
+    template = " ".join(template.split())  # always one line
+    return template.replace("{tools}", _user_names(calls)) if template else ""
+
+
 def make_output_hook(get: Callable[[str, Any], Any]):
     def tool_call_salvage_strip(response_text: Any = None, model: Any = None, **kwargs: Any):
         try:
@@ -97,7 +125,8 @@ def make_output_hook(get: Callable[[str, Any], Any]):
                 "nothing ran. Removed the markup from the reply (model=%s).",
                 len(leak.calls), "/".join(leak.formats), _names(leak.calls), model)
             if kept:
-                return kept
+                notice = stripped_notice(settings.stripped_notice, leak.calls)
+                return f"{kept}\n\n{notice}" if notice else kept
             if settings.empty_notice:
                 return settings.empty_notice
             logger.warning("tool-call-salvage: empty_notice is empty, so the reply is left as it was")

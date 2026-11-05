@@ -1,5 +1,5 @@
 name: tool-call-salvage
-version: "0.1.0"
+version: "0.2.0"
 description: >-
   Removes tool-call markup that a model wrote into its reply as text instead of making a real
   tool call; optionally (off by default) turns it into a real call for models you list.
@@ -53,3 +53,10 @@ config_schema:
     label: Notice when nothing else is left
     description: >-
       Shown instead of a reply that was only leaked markup. Empty leaves such a reply unchanged.
+  stripped_notice:
+    type: str
+    default: "(Not run: {tools}. The model wrote the call as text instead of making it.)"
+    label: Notice when text is left
+    description: >-
+      Added on its own line after the text that is left when markup is removed, so an announced
+      action does not read as done. {tools} becomes the tool names (never arguments). Empty: no notice.
